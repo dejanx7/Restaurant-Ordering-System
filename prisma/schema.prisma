@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -10,4 +5,216 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─── Menu ───────────────────────────────────────────────
+
+model Category {
+  id        String     @id @default(cuid())
+  name      String
+  sortOrder Int        @default(0)
+  isActive  Boolean    @default(true)
+  items     MenuItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model MenuItem {
+  id             String          @id @default(cuid())
+  categoryId     String
+  category       Category        @relation(fields: [categoryId], references: [id])
+  name           String
+  description    String?
+  price          Int             // stored in cents
+  imageUrl       String?
+  isAvailable    Boolean         @default(true)
+  isArchived     Boolean         @default(false)
+  tags           DietaryTag[]
+  sortOrder      Int             @default(0)
+  modifierGroups ModifierGroup[]
+  orderItems     OrderItem[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+enum DietaryTag {
+  VEGAN
+  VEGETARIAN
+  GLUTEN_FREE
+  DAIRY_FREE
+  SPICY
+  NUT_FREE
+}
+
+model ModifierGroup {
+  id         String     @id @default(cuid())
+  menuItemId String
+  menuItem   MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  name       String
+  required   Boolean    @default(false)
+  minSelect  Int        @default(0)
+  maxSelect  Int        @default(1)
+  modifiers  Modifier[]
+  sortOrder  Int        @default(0)
+}
+
+model Modifier {
+  id              String        @id @default(cuid())
+  modifierGroupId String
+  modifierGroup   ModifierGroup @relation(fields: [modifierGroupId], references: [id], onDelete: Cascade)
+  name            String
+  priceAdjustment Int           @default(0) // in cents
+  isDefault       Boolean       @default(false)
+  isAvailable     Boolean       @default(true)
+  sortOrder       Int           @default(0)
+}
+
+// ─── Orders ─────────────────────────────────────────────
+
+enum OrderType {
+  PICKUP
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY
+  COMPLETED
+  CANCELLED
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  orderNumber   String      @unique
+  customerName  String
+  customerEmail String
+  customerPhone String?
+
+  type   OrderType
+  status OrderStatus @default(PENDING)
+
+  // Delivery fields
+  deliveryAddress String?
+  deliveryLat     Float?
+  deliveryLng     Float?
+  deliveryFee     Int     @default(0)
+
+  // Financials (all in cents)
+  subtotal       Int
+  taxAmount      Int
+  discountAmount Int @default(0)
+  totalAmount    Int
+
+  // Stripe
+  stripePaymentIntentId String? @unique
+
+  // Promo
+  promoCodeId String?
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id])
+
+  // Timing
+  estimatedReadyAt DateTime?
+  acceptedAt       DateTime?
+  preparedAt       DateTime?
+  completedAt      DateTime?
+
+  specialInstructions String?
+
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  name       String   // snapshot at time of order
+  price      Int      // snapshot in cents
+  quantity   Int
+  modifiers  Json     // snapshot: [{name: "Large", priceAdj: 200}]
+  specialNote String?
+  lineTotal  Int      // (price + modifiersTotal) * quantity
+}
+
+model OrderStatusHistory {
+  id        String      @id @default(cuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  note      String?
+  changedAt DateTime    @default(now())
+}
+
+// ─── Settings & Promos ──────────────────────────────────
+
+model RestaurantSettings {
+  id                  String  @id @default("singleton")
+  name                String  @default("My Restaurant")
+  phone               String?
+  address             String?
+  logoUrl             String?
+
+  isOpen        Boolean @default(true)
+  isPausedToday Boolean @default(false)
+
+  deliveryEnabled     Boolean @default(true)
+  deliveryRadiusMiles Float   @default(5.0)
+  deliveryFeeFixed    Int     @default(300)
+  deliveryMinOrder    Int     @default(1500)
+
+  pickupEstimateMin  Int @default(15)
+  pickupEstimateMax  Int @default(25)
+  deliveryEstimateMin Int @default(30)
+  deliveryEstimateMax Int @default(45)
+
+  taxRate Float @default(0.08)
+
+  hours     BusinessHours[]
+  updatedAt DateTime        @updatedAt
+}
+
+model BusinessHours {
+  id         String             @id @default(cuid())
+  settingsId String
+  settings   RestaurantSettings @relation(fields: [settingsId], references: [id])
+  dayOfWeek  Int                // 0=Sun, 6=Sat
+  openTime   String             // "11:00"
+  closeTime  String             // "22:00"
+  isClosed   Boolean            @default(false)
+}
+
+model PromoCode {
+  id            String       @id @default(cuid())
+  code          String       @unique
+  description   String?
+  discountType  DiscountType
+  discountValue Int          // cents (flat) or basis points (percent: 1000 = 10%)
+  minimumOrder  Int?         // cents
+  maxUses       Int?
+  usedCount     Int          @default(0)
+  expiresAt     DateTime?
+  isActive      Boolean      @default(true)
+  orders        Order[]
+  createdAt     DateTime     @default(now())
+}
+
+enum DiscountType {
+  FLAT_AMOUNT
+  PERCENTAGE
+}
+
+// ─── Order Number Sequence ──────────────────────────────
+// Using a separate model to generate sequential order numbers safely
+model OrderSequence {
+  id    Int @id @default(autoincrement())
 }
