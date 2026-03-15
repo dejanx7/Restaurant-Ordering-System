@@ -44,5 +44,7 @@ next-env.d.ts
 
 /src/generated/prisma
 
-# project docs (root-level ignored, tracked in docs/)
-/CLAUDE.md
+# project docs (local only)
+CLAUDE.md
+PROJECT_TRACKER.md
+docs/
