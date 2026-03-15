@@ -9,17 +9,19 @@ A mobile-responsive web application for a single restaurant that supports Pick-u
 | Framework | Next.js 16 (App Router, React Server Components, Turbopack) |
 | Language | TypeScript |
 | Database | PostgreSQL + Prisma 7 ORM |
+| Payments | Stripe (Payment Element + webhooks) |
+| Real-Time | Server-Sent Events (SSE) |
 | Server State | TanStack Query v5 |
 | Client State | Zustand (cart persistence via localStorage) |
 | UI | Tailwind CSS v4 + shadcn/ui + Framer Motion |
 | Validation | Zod |
-| Payments | Stripe (planned) |
 | Icons | Lucide React |
 
 ## Prerequisites
 
 - **Node.js** v20+
 - **npm** v9+
+- **Stripe account** with test keys (for payment integration)
 - No separate PostgreSQL installation needed — Prisma Dev Server handles it
 
 ## Getting Started
@@ -35,6 +37,11 @@ npm install
 ```bash
 cp .env.example .env
 ```
+
+Update `.env` with your Stripe test keys from the [Stripe Dashboard](https://dashboard.stripe.com/test/apikeys):
+- `STRIPE_SECRET_KEY` — starts with `sk_test_`
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` — starts with `pk_test_`
+- `STRIPE_WEBHOOK_SECRET` — starts with `whsec_` (from Stripe CLI or dashboard)
 
 ### 3. Start the local database
 
@@ -65,7 +72,16 @@ Populates the database with sample restaurant settings, menu categories, items, 
 npx tsx prisma/seed.ts
 ```
 
-### 6. Start the development server
+### 6. Set up Stripe webhooks (for local development)
+
+```bash
+# In a separate terminal
+npx stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+Copy the webhook signing secret shown and add it as `STRIPE_WEBHOOK_SECRET` in your `.env`.
+
+### 7. Start the development server
 
 ```bash
 npm run dev
@@ -95,12 +111,12 @@ The app will be available at **http://localhost:3000**.
 | URL | Description |
 |---|---|
 | `http://localhost:3000` | Customer Portal — Menu & ordering |
-| `http://localhost:3000/checkout` | Customer Portal — Checkout page |
-| `http://localhost:3000/order/[orderId]` | Customer Portal — Order tracking |
-| `http://localhost:3000/dashboard` | Restaurant Portal — Live order board |
-| `http://localhost:3000/menu` | Restaurant Portal — Menu management (placeholder) |
-| `http://localhost:3000/orders` | Restaurant Portal — Order history (placeholder) |
-| `http://localhost:3000/settings` | Restaurant Portal — Settings (placeholder) |
+| `http://localhost:3000/checkout` | Customer Portal — Checkout with Stripe payment |
+| `http://localhost:3000/order/[orderId]` | Customer Portal — Real-time order tracking |
+| `http://localhost:3000/dashboard` | Restaurant Portal — Live order board with SSE |
+| `http://localhost:3000/menu` | Restaurant Portal — Menu management |
+| `http://localhost:3000/orders` | Restaurant Portal — Order history |
+| `http://localhost:3000/settings` | Restaurant Portal — Settings & promo codes |
 
 ---
 
@@ -138,51 +154,76 @@ The app will be available at **http://localhost:3000**.
 3. For delivery orders, enter your **delivery address**
 4. Add any **special instructions** for the kitchen
 5. Review your **order summary** including subtotal, tax (8%), and delivery fee ($3.99 for delivery orders)
-6. Click **"Place Order"** to submit
+6. Click **"Continue to Payment"** — the server validates your order and creates a Stripe PaymentIntent
+7. Enter your **card details** using the Stripe Payment Element (also supports Apple Pay & Google Pay)
+8. Click **"Pay"** — on success, you're redirected to the order tracking page
 
 #### Tracking Your Order
 
 After placing an order, you're redirected to the **order tracking page** which shows:
 - A **status tracker** with 5 steps: Order Received > Confirmed > Preparing > Ready > Completed
 - Your **order details** with itemized breakdown
-- The page **auto-refreshes every 5 seconds** to show status updates from the restaurant
+- A **Live/Polling indicator** — status updates arrive instantly via SSE, with polling as a fallback
 
 ### Restaurant Portal
 
 #### Live Order Board
 
 1. Open **http://localhost:3000/dashboard** to see the order management dashboard
-2. Orders are displayed in a **Kanban board** with 4 columns:
+2. A **Live** badge indicates active SSE connection (falls back to polling if disconnected)
+3. Orders are displayed in a **Kanban board** with 4 columns:
    - **New Orders** (yellow) — freshly placed orders awaiting acceptance
    - **Confirmed** (blue) — accepted orders
    - **Preparing** (orange) — orders being made in the kitchen
    - **Ready** (green) — orders ready for pickup or delivery
-3. Each order card shows:
+4. Each order card shows:
    - Order number and customer name
    - Order type badge (Pickup or Delivery)
    - Item list with quantities and prices
    - Elapsed time since the order was placed
    - Total amount
-4. Click the **action button** on each card to advance it to the next status:
+5. Click the **action button** on each card to advance it to the next status:
    - "Accept" moves New > Confirmed
    - "Start Preparing" moves Confirmed > Preparing
    - "Mark Ready" moves Preparing > Ready
    - "Complete" moves Ready > Completed (removes from board)
-5. The board **auto-refreshes every 10 seconds** to show new incoming orders
+6. **New order alerts**: an audio chime plays and the header flashes when a new order arrives
+
+#### Menu Management
+
+1. Open **http://localhost:3000/menu** to manage your menu
+2. **Categories**: Create, edit, delete, and toggle active/hidden — hidden categories don't appear on the customer menu
+3. **Items**: Click a category to expand it, then create, edit, or archive items with name, description, price, and dietary tags
+4. **Availability toggle**: Use the switch on any item to instantly mark it as unavailable ("86 this item")
+5. **Modifiers**: Click "+Mod" on an item to add modifier groups (e.g., "Size" with options "Small", "Large +$3") with required/optional and max selection settings
+
+#### Order History
+
+Open **http://localhost:3000/orders** to see all past orders with status, order type, customer name, timestamps, and totals.
+
+#### Settings
+
+Open **http://localhost:3000/settings** to configure:
+
+- **Quick toggles**: Open/Closed, Paused for Today, Delivery On/Off
+- **General**: Restaurant name, phone, address, tax rate, pickup time estimates
+- **Hours**: Per-day business hours with open/close times and closed toggle
+- **Delivery**: Radius, delivery fee, minimum order, delivery time estimates
+- **Promo Codes**: Create and manage discount codes with percentage or flat amount, minimum order, max uses, and expiry dates
 
 #### Navigation
 
 Use the top navigation bar (desktop) or bottom tab bar (mobile) to switch between:
 - **Orders** — Live order board
-- **Menu** — Menu management (coming soon)
-- **History** — Past orders (coming soon)
-- **Settings** — Restaurant settings (coming soon)
+- **Menu** — Menu management
+- **History** — Past orders
+- **Settings** — Restaurant settings & promo codes
 
 ---
 
 ## API Reference
 
-### Menu
+### Public APIs
 
 #### `GET /api/menu`
 
@@ -190,11 +231,9 @@ Returns all active menu categories with items and modifiers, plus restaurant set
 
 **Response:** `{ categories: [...], restaurant: { name, isOpen, taxRate, ... } }`
 
-### Orders
+#### `POST /api/create-payment-intent`
 
-#### `POST /api/checkout`
-
-Creates a new order. Validates items against the database, recalculates all prices server-side, and checks restaurant open status.
+Validates order data, recalculates prices server-side, and creates a Stripe PaymentIntent.
 
 **Request body:**
 ```json
@@ -203,8 +242,6 @@ Creates a new order. Validates items against the database, recalculates all pric
   "customerEmail": "john@example.com",
   "customerPhone": "555-0123",
   "orderType": "PICKUP",
-  "deliveryAddress": null,
-  "specialInstructions": "No onions please",
   "items": [
     {
       "menuItemId": "item_id",
@@ -217,7 +254,15 @@ Creates a new order. Validates items against the database, recalculates all pric
 }
 ```
 
-**Response:** `{ orderId, orderNumber, totalAmount }`
+**Response:** `{ clientSecret, paymentIntentId, totalAmount }`
+
+#### `POST /api/webhooks/stripe`
+
+Stripe webhook handler. On `payment_intent.succeeded`, creates the order in the database (idempotent on `stripePaymentIntentId`) and broadcasts an SSE event to the restaurant dashboard.
+
+#### `POST /api/checkout`
+
+Legacy direct order creation without payment. Same validation as `create-payment-intent` but creates the order immediately.
 
 #### `GET /api/orders?active=true`
 
@@ -229,7 +274,7 @@ Returns full details for a single order including items, totals, and status.
 
 #### `PATCH /api/orders/[orderId]/status`
 
-Updates an order's status. Creates a history entry and sets relevant timestamps (acceptedAt, preparedAt, completedAt).
+Updates an order's status. Creates a history entry, sets relevant timestamps, and broadcasts an SSE event.
 
 **Request body:**
 ```json
@@ -239,6 +284,37 @@ Updates an order's status. Creates a history entry and sets relevant timestamps 
 ```
 
 **Valid statuses:** `PENDING`, `CONFIRMED`, `PREPARING`, `READY`, `COMPLETED`, `CANCELLED`
+
+#### `GET /api/orders/by-payment-intent/[paymentIntentId]`
+
+Looks up an order by its Stripe PaymentIntent ID. Used by the frontend after payment to find the created order.
+
+### SSE Endpoints
+
+#### `GET /api/sse/orders`
+
+Server-Sent Events stream for the restaurant dashboard. Emits `order:new` and `order:updated` events for all orders.
+
+#### `GET /api/sse/order/[orderId]`
+
+Server-Sent Events stream filtered to a single order. Used by the customer tracking page.
+
+### Admin APIs
+
+All admin routes are under `/api/admin/` — no authentication enforced yet.
+
+| Endpoint | Methods | Purpose |
+|---|---|---|
+| `/api/admin/categories` | GET, POST, PATCH | List, create, reorder categories |
+| `/api/admin/categories/[id]` | PATCH, DELETE | Update or delete a category |
+| `/api/admin/menu-items` | GET, POST | List and create menu items |
+| `/api/admin/menu-items/[id]` | PATCH, DELETE | Update or archive a menu item |
+| `/api/admin/modifier-groups` | POST | Create a modifier group with options |
+| `/api/admin/modifier-groups/[id]` | PATCH, DELETE | Update or delete a modifier group |
+| `/api/admin/settings` | GET, PATCH | Read and update restaurant settings |
+| `/api/admin/settings/hours` | PUT | Replace all business hours |
+| `/api/admin/promo-codes` | GET, POST | List and create promo codes |
+| `/api/admin/promo-codes/[id]` | PATCH, DELETE | Update or delete a promo code |
 
 ---
 
@@ -252,7 +328,7 @@ Updates an order's status. Creates a history entry and sets relevant timestamps 
 | `MenuItem` | Individual menu items with price (in cents), description, dietary tags, availability |
 | `ModifierGroup` | Groups of options for an item (e.g., "Choose Size") with min/max selection |
 | `Modifier` | Individual options within a group (e.g., "Large" with +$3.00) |
-| `Order` | Customer orders with contact info, type, status, and financial totals |
+| `Order` | Customer orders with contact info, type, status, Stripe PaymentIntent ID, and financial totals |
 | `OrderItem` | Snapshot of items at order time (name, price, modifiers frozen) |
 | `OrderStatusHistory` | Audit trail of status changes with timestamps |
 | `RestaurantSettings` | Singleton config: hours, delivery settings, tax rate |
@@ -266,6 +342,8 @@ Updates an order's status. Creates a history entry and sets relevant timestamps 
 - **Order items are snapshots** — changing a menu item's price doesn't affect past orders
 - **Server-side price validation** — the checkout API recalculates all totals from the database, never trusting client-submitted prices
 - **Order numbers** use a PostgreSQL auto-increment sequence (via `OrderSequence`) to avoid race conditions
+- **Payment-first order creation** — orders are only created in the database after Stripe confirms payment, preventing unpaid orders
+- **Idempotent webhook processing** — duplicate `payment_intent.succeeded` events are safely ignored via unique `stripePaymentIntentId`
 
 ---
 
@@ -278,42 +356,62 @@ src/
 │   ├── (customer)/                         # Customer portal route group
 │   │   ├── layout.tsx                      # Header + cart drawer
 │   │   ├── page.tsx                        # Menu page (Server Component)
-│   │   ├── checkout/page.tsx               # Checkout form
-│   │   └── order/[orderId]/page.tsx        # Order tracking
+│   │   ├── checkout/page.tsx               # Two-step checkout (details → Stripe payment)
+│   │   └── order/
+│   │       ├── [orderId]/page.tsx          # Real-time order tracking (SSE)
+│   │       └── confirming/page.tsx         # 3D Secure redirect handler
 │   ├── (restaurant)/                       # Restaurant portal route group
-│   │   ├── layout.tsx                      # Sidebar/bottom nav
-│   │   ├── dashboard/page.tsx              # Live order board
-│   │   ├── menu/page.tsx                   # Menu management (placeholder)
-│   │   ├── orders/page.tsx                 # Order history (placeholder)
-│   │   └── settings/page.tsx               # Settings (placeholder)
+│   │   ├── layout.tsx                      # Top nav + mobile bottom tabs
+│   │   ├── dashboard/page.tsx              # Live order board (SSE + audio alerts)
+│   │   ├── menu/page.tsx                   # Menu management (categories, items, modifiers)
+│   │   ├── orders/page.tsx                 # Order history
+│   │   └── settings/page.tsx              # Settings, hours, delivery, promo codes
 │   └── api/
 │       ├── menu/route.ts                   # GET menu + restaurant settings
-│       ├── checkout/route.ts               # POST create order
-│       └── orders/
-│           ├── route.ts                    # GET list orders
-│           └── [orderId]/
-│               ├── route.ts               # GET order detail
-│               └── status/route.ts         # PATCH update status
+│       ├── checkout/route.ts               # POST legacy order creation (no payment)
+│       ├── create-payment-intent/route.ts  # POST create Stripe PaymentIntent
+│       ├── webhooks/stripe/route.ts        # POST Stripe webhook handler
+│       ├── orders/
+│       │   ├── route.ts                    # GET list orders
+│       │   ├── [orderId]/
+│       │   │   ├── route.ts               # GET order detail
+│       │   │   └── status/route.ts         # PATCH update status + SSE broadcast
+│       │   └── by-payment-intent/
+│       │       └── [paymentIntentId]/route.ts  # GET order by PaymentIntent
+│       ├── sse/
+│       │   ├── orders/route.ts             # SSE stream for dashboard
+│       │   └── order/[orderId]/route.ts    # SSE stream for order tracking
+│       └── admin/
+│           ├── categories/                 # Category CRUD
+│           ├── menu-items/                 # Menu item CRUD
+│           ├── modifier-groups/            # Modifier group CRUD
+│           ├── settings/                   # Restaurant settings + hours
+│           └── promo-codes/                # Promo code CRUD
 ├── components/
 │   ├── customer/                           # Customer portal components
-│   │   ├── customer-header.tsx             # Header with cart button
-│   │   ├── menu-hero.tsx                   # Hero banner with restaurant info
-│   │   ├── category-nav.tsx                # Sticky category tabs
-│   │   ├── menu-section.tsx                # Category section with items
-│   │   ├── menu-item-card.tsx              # Individual item card
-│   │   ├── menu-page-client.tsx            # Client wrapper for menu page
-│   │   ├── item-customization-modal.tsx    # Modifier selection dialog
-│   │   └── cart-drawer.tsx                 # Slide-out cart
-│   ├── restaurant/                         # Restaurant portal components
+│   │   ├── customer-header.tsx
+│   │   ├── menu-hero.tsx
+│   │   ├── category-nav.tsx
+│   │   ├── menu-section.tsx
+│   │   ├── menu-item-card.tsx
+│   │   ├── menu-page-client.tsx
+│   │   ├── item-customization-modal.tsx
+│   │   ├── cart-drawer.tsx
+│   │   └── stripe-payment-form.tsx         # Stripe Payment Element wrapper
+│   ├── restaurant/
 │   │   ├── order-board.tsx                 # Kanban board layout
 │   │   └── order-card.tsx                  # Individual order card
 │   ├── providers/
-│   │   └── query-provider.tsx              # TanStack Query provider
+│   │   └── query-provider.tsx
 │   └── ui/                                # shadcn/ui components
 ├── hooks/
-│   └── use-cart-drawer.ts                  # Cart drawer open/close state
+│   ├── use-cart-drawer.ts                  # Cart drawer open/close state
+│   ├── use-order-sse.ts                    # Dashboard SSE (new order alerts, query invalidation)
+│   └── use-order-status.ts                 # Customer tracking SSE (live status updates)
 ├── lib/
 │   ├── prisma.ts                           # Prisma client singleton
+│   ├── stripe.ts                           # Stripe server client singleton
+│   ├── sse.ts                              # SSE event emitter (in-process pub/sub)
 │   ├── pricing.ts                          # Monetary calculations (cents)
 │   ├── order-number.ts                     # Sequential order number generator
 │   └── utils.ts                            # cn() utility
@@ -345,3 +443,4 @@ The seed script (`prisma/seed.ts`) creates:
 - **Mobile-first**: Responsive layout with bottom navigation on the restaurant portal
 - **Animations**: Framer Motion for menu card interactions and hero section
 - **Glass-morphism**: Translucent header/nav bars with backdrop blur
+- **Stripe theming**: Payment Element styled to match the dark theme with emerald accents
