@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import {
   CheckCircle2,
@@ -9,9 +9,12 @@ import {
   Package,
   Truck,
   ArrowLeft,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import Link from "next/link";
 import { Separator } from "@/components/ui/separator";
+import { useOrderStatus } from "@/hooks/use-order-status";
 import { formatPrice } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
@@ -44,29 +47,46 @@ const statusSteps = [
 
 export default function OrderTrackingPage() {
   const params = useParams();
+  const orderId = params.orderId as string;
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchOrder() {
-      try {
-        const res = await fetch(`/api/orders/${params.orderId}`);
-        if (res.ok) {
-          setOrder(await res.json());
-        }
-      } catch (e) {
-        console.error("Failed to fetch order:", e);
-      } finally {
-        setLoading(false);
+  const fetchOrder = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orders/${orderId}`);
+      if (res.ok) {
+        setOrder(await res.json());
       }
+    } catch (e) {
+      console.error("Failed to fetch order:", e);
+    } finally {
+      setLoading(false);
     }
+  }, [orderId]);
 
+  // Initial fetch + polling fallback
+  useEffect(() => {
     fetchOrder();
 
-    // Poll for updates every 5 seconds (SSE in Phase 2)
-    const interval = setInterval(fetchOrder, 5000);
+    // Fallback polling (30s) in case SSE disconnects
+    const interval = setInterval(fetchOrder, 30000);
     return () => clearInterval(interval);
-  }, [params.orderId]);
+  }, [fetchOrder]);
+
+  // SSE for live status updates
+  const handleStatusChange = useCallback(
+    (status: string) => {
+      setOrder((prev) => (prev ? { ...prev, status } : null));
+      // Re-fetch full order data for any other fields that may have changed
+      fetchOrder();
+    },
+    [fetchOrder]
+  );
+
+  const { connected } = useOrderStatus({
+    orderId,
+    onStatusChange: handleStatusChange,
+  });
 
   if (loading) {
     return (
@@ -103,13 +123,36 @@ export default function OrderTrackingPage() {
         >
           <ArrowLeft className="h-5 w-5" />
         </Link>
-        <div>
+        <div className="flex-1">
           <h1 className="text-xl font-bold">Order {order.orderNumber}</h1>
           <p className="text-sm text-muted-foreground">
             {order.type === "DELIVERY" ? "Delivery" : "Pickup"} order
           </p>
         </div>
+        <div
+          className={cn(
+            "flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+            connected
+              ? "bg-emerald-500/10 text-emerald-400"
+              : "bg-yellow-500/10 text-yellow-400"
+          )}
+        >
+          {connected ? (
+            <Wifi className="h-3 w-3" />
+          ) : (
+            <WifiOff className="h-3 w-3" />
+          )}
+          {connected ? "Live" : "Polling"}
+        </div>
       </div>
+
+      {/* Connection lost banner */}
+      {!connected && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-400">
+          <WifiOff className="h-3.5 w-3.5" />
+          <span>Connection lost — reconnecting...</span>
+        </div>
+      )}
 
       {/* Status Tracker */}
       <div className="mb-8 rounded-xl border border-border/50 bg-card/50 p-6">

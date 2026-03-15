@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { orderEvents } from "@/lib/sse";
 import { z } from "zod";
 
 const updateSchema = z.object({
@@ -52,6 +53,13 @@ export async function PATCH(
       });
 
       return updated;
+    });
+
+    // Broadcast status change via SSE
+    orderEvents.emit({
+      type: "order:updated",
+      orderId,
+      status: order.status,
     });
 
     return NextResponse.json({

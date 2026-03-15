@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { orderEvents } from "@/lib/sse";
-import { generateOrderNumber } from "@/lib/order-number";
+import { stripe } from "@/lib/stripe";
 import { z } from "zod";
 
-const checkoutSchema = z.object({
+const paymentIntentSchema = z.object({
   customerName: z.string().min(1, "Name is required"),
   customerEmail: z.string().email("Valid email required"),
   customerPhone: z.string().optional(),
@@ -33,7 +32,7 @@ const checkoutSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const parsed = checkoutSchema.safeParse(body);
+    const parsed = paymentIntentSchema.safeParse(body);
 
     if (!parsed.success) {
       return NextResponse.json(
@@ -44,7 +43,6 @@ export async function POST(request: NextRequest) {
 
     const data = parsed.data;
 
-    // Validate delivery address for delivery orders
     if (data.orderType === "DELIVERY" && !data.deliveryAddress) {
       return NextResponse.json(
         { error: "Delivery address is required for delivery orders" },
@@ -52,7 +50,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get restaurant settings for tax rate and delivery fee
+    // Get restaurant settings
     const settings = await prisma.restaurantSettings.findUnique({
       where: { id: "singleton" },
     });
@@ -71,7 +69,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify items against the database
+    // Verify items against database
     const menuItemIds = data.items.map((i) => i.menuItemId);
     const dbItems = await prisma.menuItem.findMany({
       where: { id: { in: menuItemIds }, isAvailable: true, isArchived: false },
@@ -84,7 +82,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate totals server-side (never trust client calculations)
+    // Calculate totals server-side
     const dbItemMap = new Map(dbItems.map((i) => [i.id, i]));
     let subtotal = 0;
 
@@ -108,10 +106,7 @@ export async function POST(request: NextRequest) {
     const deliveryFee =
       data.orderType === "DELIVERY" ? settings.deliveryFeeFixed : 0;
 
-    if (
-      data.orderType === "DELIVERY" &&
-      subtotal < settings.deliveryMinOrder
-    ) {
+    if (data.orderType === "DELIVERY" && subtotal < settings.deliveryMinOrder) {
       return NextResponse.json(
         {
           error: `Minimum order for delivery is $${(settings.deliveryMinOrder / 100).toFixed(2)}`,
@@ -123,57 +118,36 @@ export async function POST(request: NextRequest) {
     const taxAmount = Math.round(subtotal * settings.taxRate);
     const totalAmount = subtotal + taxAmount + deliveryFee;
 
-    const orderNumber = await generateOrderNumber();
-
-    // Create order in a transaction
-    const order = await prisma.$transaction(async (tx) => {
-      const newOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          customerName: data.customerName,
-          customerEmail: data.customerEmail,
-          customerPhone: data.customerPhone,
-          type: data.orderType,
-          status: "PENDING",
-          deliveryAddress:
-            data.orderType === "DELIVERY" ? data.deliveryAddress : null,
-          deliveryFee,
-          subtotal,
-          taxAmount,
-          totalAmount,
-          specialInstructions: data.specialInstructions,
-          items: {
-            create: orderItems,
-          },
-        },
-      });
-
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId: newOrder.id,
-          status: "PENDING",
-        },
-      });
-
-      return newOrder;
-    });
-
-    // Broadcast new order via SSE
-    orderEvents.emit({
-      type: "order:new",
-      orderId: order.id,
-      status: "PENDING",
+    // Create Stripe PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: totalAmount,
+      currency: "usd",
+      automatic_payment_methods: { enabled: true },
+      metadata: {
+        customerName: data.customerName,
+        customerEmail: data.customerEmail,
+        customerPhone: data.customerPhone || "",
+        orderType: data.orderType,
+        deliveryAddress: data.deliveryAddress || "",
+        specialInstructions: data.specialInstructions || "",
+        subtotal: subtotal.toString(),
+        taxAmount: taxAmount.toString(),
+        deliveryFee: deliveryFee.toString(),
+        // Store order items as JSON in metadata
+        orderItems: JSON.stringify(orderItems),
+      },
+      receipt_email: data.customerEmail,
     });
 
     return NextResponse.json({
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      totalAmount: order.totalAmount,
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      totalAmount,
     });
   } catch (error) {
-    console.error("Checkout error:", error);
+    console.error("Create PaymentIntent error:", error);
     return NextResponse.json(
-      { error: "Failed to process order" },
+      { error: "Failed to initialize payment" },
       { status: 500 }
     );
   }
